@@ -1,8 +1,8 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Activity, Flame, Trophy, Clock, TrendingUp, Target, BarChart3, Rocket } from "lucide-react";
-import { LEVELS, PROJECTS, MILESTONES, getAllMissions, getLevelForDay, getMission, totalDays } from "@/lib/curriculum";
-import { useProgress, currentDay, xpForNextLevel, nextMilestone } from "@/lib/progress";
+import { Activity, Flame, Trophy, Clock, TrendingUp, Target, BarChart3, Rocket, CalendarDays, X, Zap } from "lucide-react";
+import { LEVELS, PROJECTS, MILESTONES, getAllMissions, getLevelForDay, getMission, totalDays, type Mission } from "@/lib/curriculum";
+import { useProgress, currentDay, xpForNextLevel, nextMilestone, completedByCalendarDate, computeLongestStreak } from "@/lib/progress";
 import { StatCard } from "@/components/StatCard";
 import { cn } from "@/lib/utils";
 
@@ -47,14 +47,10 @@ export default function StatisticsPage() {
     });
   }, [missions, progress.completedDays]);
 
-  // Consistency
-  const startDate = new Date(progress.startDate);
-  const dayToDate = (d: number) => {
-    const dt = new Date(startDate);
-    dt.setDate(dt.getDate() + (d - 1));
-    return dt;
-  };
-  const completedDates = useMemo(() => new Set(progress.completedDays.map((d) => dayToDate(d).toDateString())), [progress.completedDays, progress.startDate]);
+  // Consistency — grouped by the REAL calendar date each mission was
+  // completed on (progress.completedAt), not an idealized schedule date.
+  const completedByDate = useMemo(() => completedByCalendarDate(progress), [progress.completedAt]);
+  const completedDates = useMemo(() => new Set(Object.keys(completedByDate)), [completedByDate]);
 
   const weeklyConsistency = useMemo(() => {
     let hit = 0;
@@ -74,17 +70,8 @@ export default function StatisticsPage() {
     return (hit / 30) * 100;
   }, [completedDates]);
 
-  // Longest streak (from completed days sorted)
-  const longestStreak = useMemo(() => {
-    const sorted = [...progress.completedDays].sort((a, b) => a - b);
-    let best = 0, run = 0, prev = -Infinity;
-    for (const d of sorted) {
-      run = d === prev + 1 ? run + 1 : 1;
-      best = Math.max(best, run);
-      prev = d;
-    }
-    return best;
-  }, [progress.completedDays]);
+  // Longest streak — real calendar days, same logic used for the live streak
+  const longestStreak = useMemo(() => computeLongestStreak(progress.completedAt), [progress.completedAt]);
 
   // Level completion breakdown
   const levelStats = useMemo(() => {
@@ -98,17 +85,19 @@ export default function StatisticsPage() {
   // Weekly XP over last 12 weeks
   const weeklyXp = useMemo(() => {
     const buckets: number[] = new Array(12).fill(0);
-    for (const d of progress.completedDays) {
-      const dt = dayToDate(d);
+    for (const [dateStr, dayNums] of Object.entries(completedByDate)) {
+      const dt = new Date(dateStr);
       const diffDays = Math.floor((Date.now() - dt.getTime()) / 86400000);
       const week = Math.floor(diffDays / 7);
       if (week >= 0 && week < 12) {
-        const m = missions.find((x) => x.day === d);
-        if (m) buckets[11 - week] += m.xp;
+        for (const d of dayNums) {
+          const m = missions.find((x) => x.day === d);
+          if (m) buckets[11 - week] += m.xp;
+        }
       }
     }
     return buckets;
-  }, [progress.completedDays, missions]);
+  }, [completedByDate, missions]);
   const maxWeekly = Math.max(1, ...weeklyXp);
 
   // Project stats
@@ -117,9 +106,9 @@ export default function StatisticsPage() {
   const projectDiff = { easy: 0, medium: 0, hard: 0, elite: 0 } as Record<string, number>;
   for (const p of PROJECTS) projectDiff[p.difficulty]++;
 
-  // Heatmap: last 20 weeks (140 days)
+  // Heatmap: last 20 weeks (140 days), grouped by real completion date
   const heatmap = useMemo(() => {
-    const weeks: { date: Date; done: boolean }[][] = [];
+    const weeks: { date: Date; missionDays: number[]; intensity: 0 | 1 | 2 | 3 }[][] = [];
     const today = new Date();
     const start = new Date(today);
     start.setDate(today.getDate() - (20 * 7 - 1));
@@ -127,15 +116,27 @@ export default function StatisticsPage() {
     const dow = start.getDay();
     start.setDate(start.getDate() - dow);
     for (let w = 0; w < 21; w++) {
-      const col: { date: Date; done: boolean }[] = [];
+      const col: { date: Date; missionDays: number[]; intensity: 0 | 1 | 2 | 3 }[] = [];
       for (let d = 0; d < 7; d++) {
         const dt = new Date(start); dt.setDate(start.getDate() + w * 7 + d);
-        col.push({ date: dt, done: completedDates.has(dt.toDateString()) && dt <= today });
+        const missionDays = dt <= today ? completedByDate[dt.toDateString()] ?? [] : [];
+        const intensity: 0 | 1 | 2 | 3 = missionDays.length === 0 ? 0 : missionDays.length === 1 ? 1 : missionDays.length === 2 ? 2 : 3;
+        col.push({ date: dt, missionDays, intensity });
       }
       weeks.push(col);
     }
     return weeks;
-  }, [completedDates]);
+  }, [completedByDate]);
+
+  // Selected heatmap day (click-to-inspect)
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
+  const selectedMissions = useMemo(() => {
+    if (!selectedDateKey) return [];
+    const dayNums = completedByDate[selectedDateKey] ?? [];
+    return dayNums
+      .map((d) => missions.find((m) => m.day === d))
+      .filter((m): m is Mission => Boolean(m));
+  }, [selectedDateKey, completedByDate, missions]);
 
   return (
     <div className="mx-auto max-w-[1400px] px-8 py-8">
@@ -274,30 +275,99 @@ export default function StatisticsPage() {
 
       {/* Heatmap */}
       <Section title="Study Heatmap (last ~20 weeks)" icon={<Flame className="h-3.5 w-3.5" />}>
-        <div className="overflow-x-auto">
-          <div className="flex gap-[3px] min-w-max">
-            {heatmap.map((week, i) => (
-              <div key={i} className="flex flex-col gap-[3px]">
-                {week.map((d, j) => (
-                  <div
-                    key={j}
-                    title={`${d.date.toDateString()}${d.done ? " · studied" : ""}`}
-                    className={cn(
-                      "h-3 w-3 rounded-[3px] border border-border/60",
-                      d.done ? "bg-primary/80" : "bg-secondary/50"
-                    )}
-                  />
-                ))}
-              </div>
-            ))}
+        <div className="flex flex-col lg:flex-row gap-6">
+          <div className="overflow-x-auto">
+            <div className="flex gap-[3px] min-w-max">
+              {heatmap.map((week, i) => (
+                <div key={i} className="flex flex-col gap-[3px]">
+                  {week.map((d, j) => {
+                    const key = d.date.toDateString();
+                    const isFuture = d.date > new Date();
+                    const isSelected = selectedDateKey === key;
+                    return (
+                      <button
+                        key={j}
+                        type="button"
+                        disabled={isFuture}
+                        onClick={() => setSelectedDateKey((cur) => (cur === key ? null : key))}
+                        title={`${key}${d.missionDays.length ? ` · ${d.missionDays.length} mission${d.missionDays.length > 1 ? "s" : ""}` : ""}`}
+                        className={cn(
+                          "h-3 w-3 rounded-[3px] border transition-all",
+                          isFuture ? "cursor-default border-border/40 bg-transparent" : "cursor-pointer border-border/60 hover:scale-110",
+                          d.intensity === 0 && !isFuture && "bg-secondary/50",
+                          d.intensity === 1 && "bg-primary/40",
+                          d.intensity === 2 && "bg-primary/70",
+                          d.intensity === 3 && "bg-primary",
+                          isSelected && "ring-2 ring-offset-1 ring-offset-background ring-primary"
+                        )}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-[10.5px] text-muted-foreground">
+              <span>Less</span>
+              <span className="h-3 w-3 rounded-[3px] bg-secondary/50 border border-border/60" />
+              <span className="h-3 w-3 rounded-[3px] bg-primary/40 border border-border/60" />
+              <span className="h-3 w-3 rounded-[3px] bg-primary/70 border border-border/60" />
+              <span className="h-3 w-3 rounded-[3px] bg-primary border border-border/60" />
+              <span>More</span>
+              <span className="ml-2 text-muted-foreground/70">· click a day to see what you covered</span>
+            </div>
           </div>
-          <div className="mt-3 flex items-center gap-2 text-[10.5px] text-muted-foreground">
-            <span>Less</span>
-            <span className="h-3 w-3 rounded-[3px] bg-secondary/50 border border-border/60" />
-            <span className="h-3 w-3 rounded-[3px] bg-primary/40 border border-border/60" />
-            <span className="h-3 w-3 rounded-[3px] bg-primary/70 border border-border/60" />
-            <span className="h-3 w-3 rounded-[3px] bg-primary border border-border/60" />
-            <span>More</span>
+
+          {/* Day detail panel — uses the free space beside the grid */}
+          <div className="flex-1 min-w-[240px] rounded-xl border border-border bg-surface/60 p-4">
+            {!selectedDateKey ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 py-6 text-center">
+                <CalendarDays className="h-5 w-5 text-muted-foreground" />
+                <div className="text-xs text-muted-foreground">Click any day on the heatmap to see the topics you covered.</div>
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10.5px] uppercase tracking-[0.14em] text-muted-foreground">Selected day</div>
+                    <div className="mt-0.5 font-display text-sm font-semibold text-foreground">
+                      {new Date(selectedDateKey).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setSelectedDateKey(null)}
+                    className="rounded-md p-1 text-muted-foreground hover:bg-surface-elevated hover:text-foreground transition-colors"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {selectedMissions.length === 0 ? (
+                  <div className="mt-3 text-xs text-muted-foreground">No missions completed on this day.</div>
+                ) : (
+                  <div className="mt-3 space-y-2.5">
+                    {selectedMissions.map((m) => (
+                      <div key={m.day} className="rounded-lg border border-border bg-background/40 p-2.5">
+                        <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+                          <span>Day {m.day} · {m.type}</span>
+                          <span className="flex items-center gap-1"><Zap className="h-3 w-3" />{m.xp} XP</span>
+                        </div>
+                        <div className="mt-1 text-sm font-medium text-foreground">{m.title}</div>
+                        {m.subtopics.length > 0 && (
+                          <ul className="mt-1.5 space-y-1">
+                            {m.subtopics.map((s) => (
+                              <li key={s} className="flex items-start gap-1.5 text-[11px] text-muted-foreground leading-snug">
+                                <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-muted-foreground" />
+                                <span>{s}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </Section>

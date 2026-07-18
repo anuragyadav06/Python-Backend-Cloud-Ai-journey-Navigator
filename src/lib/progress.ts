@@ -9,9 +9,11 @@ export interface ProgressState {
   completedDays: number[]; // day numbers
   completedProjects: string[];
   notes: Record<number, string>; // day -> notes
+  completedAt: Record<number, string>; // day -> ISO timestamp of real-world completion, used for streaks
   lastActive: string; // ISO date
   streakDays: number;
   totalXp: number;
+  theme: "dark" | "light";
 }
 
 const defaultState = (): ProgressState => ({
@@ -19,9 +21,11 @@ const defaultState = (): ProgressState => ({
   completedDays: [],
   completedProjects: [],
   notes: {},
+  completedAt: {},
   lastActive: new Date().toISOString(),
   streakDays: 0,
   totalXp: 0,
+  theme: "dark",
 });
 
 let memoryState: ProgressState = defaultState();
@@ -62,7 +66,13 @@ function emit() {
 
 function update(mutate: (s: ProgressState) => ProgressState | void) {
   ensureHydrated();
-  const next = mutate({ ...memoryState, completedDays: [...memoryState.completedDays], completedProjects: [...memoryState.completedProjects], notes: { ...memoryState.notes } });
+  const next = mutate({
+    ...memoryState,
+    completedDays: [...memoryState.completedDays],
+    completedProjects: [...memoryState.completedProjects],
+    notes: { ...memoryState.notes },
+    completedAt: { ...memoryState.completedAt },
+  });
   memoryState = next ?? memoryState;
   persist();
   emit();
@@ -70,6 +80,14 @@ function update(mutate: (s: ProgressState) => ProgressState | void) {
 
 function getSnapshot(): ProgressState {
   ensureHydrated();
+  // Streak is date-based and can go stale purely from time passing (no
+  // action needed to "miss" a day) — recompute on every read so a skipped
+  // day shows as reset the moment the app is reopened, not just on toggle.
+  const fresh = computeStreak(memoryState.completedAt);
+  if (fresh !== memoryState.streakDays) {
+    memoryState = { ...memoryState, streakDays: fresh };
+    persist();
+  }
   return memoryState;
 }
 
@@ -91,13 +109,15 @@ export function toggleDay(day: number) {
     if (set.has(day)) {
       set.delete(day);
       s.totalXp = Math.max(0, s.totalXp - xp);
+      delete s.completedAt[day];
     } else {
       set.add(day);
       s.totalXp += xp;
+      s.completedAt[day] = new Date().toISOString();
     }
     s.completedDays = [...set].sort((a, b) => a - b);
     s.lastActive = new Date().toISOString();
-    s.streakDays = computeStreak(s.completedDays);
+    s.streakDays = computeStreak(s.completedAt);
     return s;
   });
 }
@@ -133,6 +153,13 @@ export function setStartDate(date: string) {
   });
 }
 
+export function setTheme(theme: "dark" | "light") {
+  update((s) => {
+    s.theme = theme;
+    return s;
+  });
+}
+
 export function resetProgress() {
   update(() => defaultState());
 }
@@ -156,20 +183,53 @@ export function importBackup(json: string): boolean {
 
 // ---- Derived selectors -----------------------------------------------------
 
-function computeStreak(completedDays: number[]): number {
-  if (completedDays.length === 0) return 0;
-  const sorted = [...completedDays].sort((a, b) => a - b);
-  let streak = 1;
-  let best = 1;
-  for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] === sorted[i - 1] + 1) {
-      streak++;
-      best = Math.max(best, streak);
-    } else {
-      streak = 1;
-    }
+function dateKey(iso: string): string {
+  return new Date(iso).toDateString();
+}
+
+// True "current streak": counts back from today (or yesterday, if today's
+// mission isn't done yet — the streak isn't broken until a full day passes
+// with zero activity) through consecutive real calendar days that had at
+// least one completion. The moment a calendar day is skipped, this returns
+// to 0 — it does NOT just track consecutive mission-day numbers.
+function computeStreak(completedAt: Record<number, string>): number {
+  const days = new Set(Object.values(completedAt).map(dateKey));
+  if (days.size === 0) return 0;
+  const cursor = new Date();
+  if (!days.has(cursor.toDateString())) cursor.setDate(cursor.getDate() - 1);
+  let streak = 0;
+  while (days.has(cursor.toDateString())) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+// Longest streak ever achieved, using the same real-calendar-day logic.
+export function computeLongestStreak(completedAt: Record<number, string>): number {
+  const days = [...new Set(Object.values(completedAt).map(dateKey))]
+    .map((d) => new Date(d))
+    .sort((a, b) => a.getTime() - b.getTime());
+  if (days.length === 0) return 0;
+  let best = 1, run = 1;
+  for (let i = 1; i < days.length; i++) {
+    const diff = Math.round((days[i].getTime() - days[i - 1].getTime()) / 86400000);
+    if (diff === 1) { run++; best = Math.max(best, run); }
+    else if (diff > 1) { run = 1; }
   }
   return best;
+}
+
+// Groups completed mission days by the real calendar date they were
+// completed on (as a `Date.toDateString()` key) — a day can hold more than
+// one mission if the person caught up on a backlog in a single sitting.
+export function completedByCalendarDate(state: ProgressState): Record<string, number[]> {
+  const map: Record<string, number[]> = {};
+  for (const [dayStr, iso] of Object.entries(state.completedAt)) {
+    const key = dateKey(iso);
+    (map[key] ??= []).push(Number(dayStr));
+  }
+  return map;
 }
 
 export function currentDay(state: ProgressState): number {
