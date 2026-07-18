@@ -32,13 +32,32 @@ let memoryState: ProgressState = defaultState();
 let hydrated = false;
 const listeners = new Set<() => void>();
 
+// Backfills `completedAt` for any completed day that predates real-date
+// tracking (old localStorage data, old backup files). We can't recover the
+// actual date those were done on, so we approximate using the idealized
+// schedule date (startDate + day offset) — the same logic the app used to
+// rely on everywhere before this feature existed. This only fills gaps; any
+// day that already has a real completedAt timestamp is left untouched.
+function migrateCompletedAt(state: ProgressState): ProgressState {
+  const missing = state.completedDays.filter((d) => !state.completedAt[d]);
+  if (missing.length === 0) return state;
+  const start = new Date(state.startDate);
+  const completedAt = { ...state.completedAt };
+  for (const day of missing) {
+    const dt = new Date(start);
+    dt.setDate(dt.getDate() + (day - 1));
+    completedAt[day] = dt.toISOString();
+  }
+  return { ...state, completedAt };
+}
+
 function loadFromStorage(): ProgressState {
   if (typeof window === "undefined") return defaultState();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw) as Partial<ProgressState>;
-    return { ...defaultState(), ...parsed };
+    return migrateCompletedAt({ ...defaultState(), ...parsed });
   } catch {
     return defaultState();
   }
@@ -174,7 +193,7 @@ export function importBackup(json: string): boolean {
     const parsed = JSON.parse(json);
     const data = parsed?.data ?? parsed;
     if (!data || typeof data !== "object") return false;
-    update(() => ({ ...defaultState(), ...data }));
+    update(() => migrateCompletedAt({ ...defaultState(), ...data }));
     return true;
   } catch {
     return false;
