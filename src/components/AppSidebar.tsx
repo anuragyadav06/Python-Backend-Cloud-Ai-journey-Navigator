@@ -7,7 +7,6 @@ import {
   Trophy,
   BarChart3,
   Settings as SettingsIcon,
-  Command,
 } from "lucide-react";
 import { useProgress, currentDay, progressPct } from "@/lib/progress";
 import { getLevelForDay } from "@/lib/curriculum";
@@ -42,15 +41,6 @@ export function AppSidebar() {
             <div className="text-[10.5px] uppercase tracking-[0.14em] text-muted-foreground">Career Console</div>
           </div>
         </div>
-      </div>
-
-      {/* Quick action */}
-      <div className="px-3 pb-3">
-        <button className="group flex w-full items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent transition-colors">
-          <Command className="h-3.5 w-3.5" />
-          <span>Jump to…</span>
-          <kbd className="ml-auto rounded border border-sidebar-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px]">⌘K</kbd>
-        </button>
       </div>
 
       {/* Nav */}

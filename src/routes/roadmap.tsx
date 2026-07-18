@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { ChevronDown, ChevronLeft, ChevronRight, Check, Clock, Zap, Lock, Trophy, Target } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Check, Clock, Zap, Lock, Trophy, Target, Search } from "lucide-react";
 import {
   getAllMissions, LEVELS, MILESTONES, type Mission,
 } from "@/lib/curriculum";
@@ -33,9 +33,15 @@ export default function Roadmap() {
   }, [missions, today, levelId, weeksInLevel]);
 
   const [weekNum, setWeekNum] = useState<number>(currentWeek);
+  const skipAutoWeekRef = useRef(false);
 
   // When level changes, jump to a sensible week (current if it's this level, else first)
+  // — unless a week was just set explicitly (e.g. via search), in which case skip once.
   useEffect(() => {
+    if (skipAutoWeekRef.current) {
+      skipAutoWeekRef.current = false;
+      return;
+    }
     if (levelId === currentLevelId) setWeekNum(currentWeek);
     else setWeekNum(weeksInLevel[0] ?? 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -65,6 +71,40 @@ export default function Roadmap() {
     el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
   }, [weekNum]);
 
+  // Topic search
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  const searchResults = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return missions
+      .filter(
+        (m) =>
+          m.title.toLowerCase().includes(q) ||
+          m.subtopics.some((s) => s.toLowerCase().includes(q)) ||
+          m.skills.some((s) => s.toLowerCase().includes(q))
+      )
+      .slice(0, 8);
+  }, [missions, query]);
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setSearchOpen(false);
+    }
+    if (searchOpen) document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [searchOpen]);
+
+  function goToMission(m: Mission) {
+    if (m.levelId !== levelId) skipAutoWeekRef.current = true;
+    setLevelId(m.levelId);
+    setWeekNum(m.week);
+    setSearchOpen(false);
+    setQuery("");
+  }
+
   return (
     <div className="mx-auto max-w-[1400px] px-8 py-8">
       {/* Header */}
@@ -74,8 +114,53 @@ export default function Roadmap() {
           <h1 className="mt-1 font-display text-3xl font-semibold text-foreground">Roadmap</h1>
           <p className="mt-1 text-sm text-muted-foreground">Level → Week → Missions. Focused. Trackable. Ship one week at a time.</p>
         </div>
-        <div className="text-sm text-muted-foreground">
-          <span className="font-medium text-foreground">{progress.completedDays.length}</span> / {missions.length} missions
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">{progress.completedDays.length}</span> / {missions.length} missions
+          </div>
+          <div className="relative" ref={searchRef}>
+            <button
+              onClick={() => setSearchOpen((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-foreground/85 hover:bg-surface-elevated transition-colors"
+            >
+              <Search className="h-4 w-4" />
+              <span className="hidden sm:inline">Search topics</span>
+            </button>
+            {searchOpen && (
+              <div className="premium-card absolute right-0 top-full z-20 mt-2 w-80 p-3">
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="e.g. JWT, Docker, pytest…"
+                  className="w-full rounded-md border border-border bg-background/60 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+                <div className="mt-2 max-h-72 overflow-y-auto">
+                  {query.trim() === "" && (
+                    <div className="px-1 py-3 text-xs text-muted-foreground">Start typing to search all {missions.length} days.</div>
+                  )}
+                  {query.trim() !== "" && searchResults.length === 0 && (
+                    <div className="px-1 py-3 text-xs text-muted-foreground">No topics found for "{query}".</div>
+                  )}
+                  {searchResults.map((m) => {
+                    const lvl = LEVELS.find((l) => l.id === m.levelId)!;
+                    return (
+                      <button
+                        key={m.day}
+                        onClick={() => goToMission(m)}
+                        className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-2 text-left hover:bg-surface-elevated transition-colors"
+                      >
+                        <span className="text-sm font-medium text-foreground">{m.title}</span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {lvl.emoji} L{m.levelId} · Week {m.week} · Day {m.day}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
